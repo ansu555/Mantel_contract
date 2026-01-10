@@ -1,19 +1,23 @@
-import { useConnect, useAccount, useDisconnect, useNetwork, useSwitchNetwork } from "wagmi";
+import { useConnect, useAccount, useDisconnect, useChainId, useSwitchChain } from "wagmi";
 import { injected } from "wagmi/connectors";
 
 export default function WalletConnect() {
-  const { connect, isLoading } = useConnect({
-    connector: injected(),
-  });
+  const { connectors, connect, isLoading } = useConnect();
   const { address, isConnected } = useAccount();
   const { disconnect } = useDisconnect();
-  const { chain } = useNetwork();
-  const { switchNetwork } = useSwitchNetwork();
+  const chainId = useChainId();
+  const { switchChain } = useSwitchChain();
+
+  const injectedConnector = connectors.find((c) => c.id === "injected");
 
   return (
     <div style={styles.container}>
       {!isConnected ? (
-        <button onClick={() => connect()} disabled={isLoading} style={styles.connectBtn}>
+        <button
+          onClick={() => injectedConnector && connect({ connector: injectedConnector })}
+          disabled={isLoading}
+          style={styles.connectBtn}
+        >
           {isLoading ? "Connecting..." : "Connect Wallet"}
         </button>
       ) : (
@@ -22,10 +26,10 @@ export default function WalletConnect() {
             <strong>Connected:</strong> {address?.substring(0, 6)}...{address?.substring(address.length - 4)}
           </p>
           <p style={styles.text}>
-            <strong>Network:</strong> {chain?.name || "Unknown"}
+            <strong>Network:</strong> {chainId === 5003 ? "Mantle Sepolia" : `Chain ${chainId}`}
           </p>
-          {chain?.id !== 5003 && (
-            <button onClick={() => switchNetwork?.(5003)} style={styles.switchBtn}>
+          {chainId !== 5003 && (
+            <button onClick={() => switchChain?.({ chainId: 5003 })} style={styles.switchBtn}>
               Switch to Mantle Sepolia
             </button>
           )}

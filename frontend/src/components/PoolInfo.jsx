@@ -1,18 +1,44 @@
-import { useAccount, useNetwork, useSwitchNetwork } from "wagmi";
-import { useState, useEffect } from "react";
-import { POOLS_ADDRESS, POOLS_ABI } from "../config";
+import { useAccount, useChainId, useSwitchChain } from "wagmi";
+import { useState } from "react";
+import { POOLS_ADDRESS, POOLS_ABI, TOKEN_ADDRESSES } from "../config";
 import { formatUnits } from "viem";
+import { publicClient } from "../viem";
 
 export default function PoolInfo() {
   const { address } = useAccount();
-  const { chain } = useNetwork();
-  const { switchNetwork } = useSwitchNetwork();
+  const chainId = useChainId();
+  const { switchChain } = useSwitchChain();
 
   const [poolId, setPoolId] = useState("0");
   const [poolInfo, setPoolInfo] = useState(null);
   const [userPosition, setUserPosition] = useState(null);
+  const [poolCount, setPoolCount] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  const fetchPoolCount = async () => {
+    if (chainId !== 5003) {
+      switchChain?.({ chainId: 5003 });
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      const count = await publicClient.readContract({
+        address: POOLS_ADDRESS,
+        abi: POOLS_ABI,
+        functionName: "poolCount",
+      });
+
+      setPoolCount(Number(count));
+    } catch (err) {
+      setError(err.message || "Failed to fetch pool count");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const fetchPoolInfo = async () => {
     if (!address) {
@@ -20,8 +46,8 @@ export default function PoolInfo() {
       return;
     }
 
-    if (chain?.id !== 5003) {
-      switchNetwork?.(5003);
+    if (chainId !== 5003) {
+      switchChain?.({ chainId: 5003 });
       setError("Switched to Mantle Sepolia");
       return;
     }
@@ -30,37 +56,35 @@ export default function PoolInfo() {
       setLoading(true);
       setError(null);
 
-      // Fetch pool info
-      const poolResponse = await fetch(window.CONTRACT_CALL_API || "/api/pool-info", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          poolsAddress: POOLS_ADDRESS,
-          poolId: parseInt(poolId),
-        }),
+      const info = await publicClient.readContract({
+        address: POOLS_ADDRESS,
+        abi: POOLS_ABI,
+        functionName: "getPoolInfo",
+        args: [BigInt(poolId)],
       });
 
-      if (!poolResponse.ok) throw new Error("Failed to fetch pool info");
-      const pool = await poolResponse.json();
-      setPoolInfo(pool);
-
-      // Fetch user position
-      const userResponse = await fetch(window.CONTRACT_CALL_API || "/api/user-position", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          poolsAddress: POOLS_ADDRESS,
-          poolId: parseInt(poolId),
-          userAddress: address,
-        }),
+      setPoolInfo({
+        token0: info[0],
+        token1: info[1],
+        reserve0: info[2],
+        reserve1: info[3],
+        totalLPTokens: info[4],
       });
 
-      if (userResponse.ok) {
-        const position = await userResponse.json();
-        setUserPosition(position);
-      }
+      const position = await publicClient.readContract({
+        address: POOLS_ADDRESS,
+        abi: POOLS_ABI,
+        functionName: "getUserPosition",
+        args: [BigInt(poolId), address],
+      });
+
+      setUserPosition({
+        lpTokens: position[0],
+        token0Deposited: position[1],
+        token1Deposited: position[2],
+      });
     } catch (err) {
-      setError(err.message);
+      setError(err.message || "Failed to fetch pool info");
     } finally {
       setLoading(false);
     }
@@ -68,8 +92,20 @@ export default function PoolInfo() {
 
   return (
     <div style={styles.card}>
-      <h3>Pool Info</h3>
+      <h3>Pool Information</h3>
       <div style={styles.form}>
+        <button onClick={fetchPoolCount} disabled={loading} style={styles.button}>
+          {loading ? "Loading..." : "Get Total Pools"}
+        </button>
+
+        {poolCount !== null && (
+          <p style={{ color: "blue", marginTop: "0.5rem" }}>
+            <strong>Total Pools:</strong> {poolCount}
+          </p>
+        )}
+
+        <hr style={{ margin: "1rem 0" }} />
+
         <label>Pool ID:</label>
         <input
           type="number"
@@ -77,6 +113,7 @@ export default function PoolInfo() {
           onChange={(e) => setPoolId(e.target.value)}
           style={styles.input}
           placeholder="0"
+          min="0"
         />
 
         <button onClick={fetchPoolInfo} disabled={loading} style={styles.button}>
@@ -85,8 +122,8 @@ export default function PoolInfo() {
 
         {poolInfo && (
           <div style={styles.infoBox}>
-            <p><strong>Token 0:</strong> {poolInfo.token0}</p>
-            <p><strong>Token 1:</strong> {poolInfo.token1}</p>
+            <p><strong>Token 0:</strong> {poolInfo.token0.substring(0, 10)}...</p>
+            <p><strong>Token 1:</strong> {poolInfo.token1.substring(0, 10)}...</p>
             <p><strong>Reserve 0:</strong> {formatUnits(poolInfo.reserve0, 18)}</p>
             <p><strong>Reserve 1:</strong> {formatUnits(poolInfo.reserve1, 18)}</p>
             <p><strong>Total LP Tokens:</strong> {formatUnits(poolInfo.totalLPTokens, 18)}</p>
@@ -102,7 +139,7 @@ export default function PoolInfo() {
           </div>
         )}
 
-        {error && <p style={{ color: "red" }}>{error}</p>}
+        {error && <p style={{ color: "red", marginTop: "0.5rem" }}>{error}</p>}
       </div>
     </div>
   );
