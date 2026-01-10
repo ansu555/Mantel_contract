@@ -10,80 +10,71 @@ export default function Swap() {
   const { writeContract, data: hash, isPending, error: writeError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({ hash });
 
-  const [poolId, setPoolId] = useState("0");
   const [tokenIn, setTokenIn] = useState("tUSDC");
   const [tokenOut, setTokenOut] = useState("tUSDT");
   const [amountIn, setAmountIn] = useState("");
   const [amountOutMin, setAmountOutMin] = useState("");
   const [estimatedOut, setEstimatedOut] = useState(null);
-  const [step, setStep] = useState("approve"); // approve, swap
+  const [step, setStep] = useState("approve");
   const [loading, setLoading] = useState(false);
-
-  // Token prices for realistic simulation
-  const tokenPrices = {
-    tUSDC: 1,
-    tUSDT: 1,
-    tDAI: 1,
-    tWETH: 3,
-    tWBTC: 20,
-    tLINK: 0.5,
-    tUNI: 0.3,
-    tAAVE: 2,
-    tCRV: 0.1,
-    tMKR: 5,
-  };
+  const [poolId, setPoolId] = useState(null);
 
   const DEFAULT_GAS_LIMIT = 500_000n;
   const tokenList = Object.keys(TOKEN_ADDRESSES);
 
-  // Pool token pairs (same as AddLiquidity)
-  const poolTokenPairs = [
-    { id: 0, token0: "tUSDC", token1: "tUSDT" },
-    { id: 1, token0: "tWETH", token1: "tUSDC" },
-    { id: 2, token0: "tWBTC", token1: "tWETH" },
-    { id: 3, token0: "tLINK", token1: "tUSDC" },
-    { id: 4, token0: "tUNI", token1: "tWETH" },
-    { id: 5, token0: "tAAVE", token1: "tUSDC" },
-    { id: 6, token0: "tCRV", token1: "tUSDC" },
-    { id: 7, token0: "tMKR", token1: "tWETH" },
-    { id: 8, token0: "tDAI", token1: "tUSDC" },
-    { id: 9, token0: "tLINK", token1: "tWETH" },
-  ];
+  // Get pool ID for the selected token pair
+  const { data: poolIdData, isLoading: isLoadingPoolId } = useReadContract({
+    address: POOLS_ADDRESS,
+    abi: POOLS_ABI,
+    functionName: "getPoolId",
+    args: [TOKEN_ADDRESSES[tokenIn], TOKEN_ADDRESSES[tokenOut]],
+    query: { enabled: !!tokenIn && !!tokenOut && tokenIn !== tokenOut },
+  });
 
-  // Get available token pairs for selected pool
-  const getPoolTokens = (pId) => {
-    const pool = poolTokenPairs.find((p) => p.id === parseInt(pId));
-    return pool ? [pool.token0, pool.token1] : ["tUSDC", "tUSDT"];
-  };
-
-  const availableTokens = getPoolTokens(poolId);
-
-  // Auto-update tokenOut if not available in new pool
+  // Update poolId when token pair changes
   useEffect(() => {
-    const tokens = getPoolTokens(poolId);
-    if (!tokens.includes(tokenOut)) {
-      setTokenOut(tokens[1] || tokens[0]);
+    if (poolIdData !== undefined) {
+      setPoolId(poolIdData);
     }
-    if (!tokens.includes(tokenIn)) {
-      setTokenIn(tokens[0]);
-    }
-  }, [poolId]);
+  }, [poolIdData]);
 
-  // Estimate output amount (simple constant product formula: x*y=k)
+  // Get pool info for reserve calculations
+  const { data: poolInfo } = useReadContract({
+    address: POOLS_ADDRESS,
+    abi: POOLS_ABI,
+    functionName: "getPoolInfo",
+    args: [poolId],
+    query: { enabled: poolId !== null && poolId !== undefined },
+  });
+
+  // Estimate output amount using actual pool reserves
   useEffect(() => {
-    if (!amountIn || amountIn === "0") {
+    if (!amountIn || amountIn === "0" || !poolInfo) {
       setEstimatedOut(null);
       return;
     }
 
-    // This is a rough estimation based on token prices
-    // Actual output will depend on pool reserves
-    const inPrice = tokenPrices[tokenIn] || 1;
-    const outPrice = tokenPrices[tokenOut] || 1;
-    const ratio = inPrice / outPrice;
-    const estimated = (parseFloat(amountIn) * ratio * 0.997).toFixed(6); // 0.3% fee
-    setEstimatedOut(estimated);
-  }, [amountIn, tokenIn, tokenOut]);
+    try {
+      const [token0, token1, reserve0, reserve1] = poolInfo;
+      const amountInParsed = parseUnits(amountIn, 18);
+      
+      // Determine which reserve is for tokenIn
+      const isToken0 = TOKEN_ADDRESSES[tokenIn].toLowerCase() === token0.toLowerCase();
+      const reserveIn = isToken0 ? reserve0 : reserve1;
+      const reserveOut = isToken0 ? reserve1 : reserve0;
+
+      // Calculate output with 0.3% fee
+      const amountInWithFee = amountInParsed * 997n;
+      const numerator = amountInWithFee * reserveOut;
+      const denominator = reserveIn * 1000n + amountInWithFee;
+      const amountOut = numerator / denominator;
+
+      setEstimatedOut(formatUnits(amountOut, 18));
+    } catch (err) {
+      console.error("Error estimating output:", err);
+      setEstimatedOut(null);
+    }
+  }, [amountIn, tokenIn, tokenOut, poolInfo]);
 
   // Get token balance
   const { data: tokenBalance } = useReadContract({
@@ -153,6 +144,11 @@ export default function Swap() {
       return;
     }
 
+    if (poolId === null || poolId === undefined) {
+      alert("Pool not found for this token pair");
+      return;
+    }
+
     const amountInParsed = parseUnits(amountIn, 18);
     const minOut = parseUnits(amountOutMin || "0", 18);
 
@@ -163,7 +159,7 @@ export default function Swap() {
           address: POOLS_ADDRESS,
           abi: POOLS_ABI,
           functionName: "swap",
-          args: [BigInt(poolId), TOKEN_ADDRESSES[tokenIn], amountInParsed, minOut],
+          args: [poolId, TOKEN_ADDRESSES[tokenIn], amountInParsed, minOut],
           gas: DEFAULT_GAS_LIMIT,
         },
         {
@@ -212,17 +208,23 @@ export default function Swap() {
           </div>
         )}
 
-        {/* Pool Selection */}
-        <div style={styles.formGroup}>
-          <label style={styles.label}>Select Pool</label>
-          <select value={poolId} onChange={(e) => setPoolId(e.target.value)} style={styles.select}>
-            {poolTokenPairs.map((pool) => (
-              <option key={pool.id} value={pool.id}>
-                Pool {pool.id}: {pool.token0} ↔ {pool.token1}
-              </option>
-            ))}
-          </select>
-        </div>
+        {/* Pool Info Display */}
+        {poolId !== null && poolId !== undefined && poolId !== 0n && (
+          <div style={styles.poolInfo}>
+            <span>Pool ID: {poolId.toString()}</span>
+            {poolInfo && (
+              <span style={styles.reserves}>
+                Reserves: {parseFloat(formatUnits(poolInfo[2], 18)).toFixed(2)} {tokenIn} / {parseFloat(formatUnits(poolInfo[3], 18)).toFixed(2)} {tokenOut}
+              </span>
+            )}
+          </div>
+        )}
+
+        {isLoadingPoolId && <div style={styles.pending}>🔍 Finding pool...</div>}
+        
+        {!isLoadingPoolId && poolId === 0n && tokenIn !== tokenOut && (
+          <div style={styles.warning}>⚠️ No pool exists for this token pair. Please select different tokens.</div>
+        )}
 
         {/* Swap Interface */}
         <div style={styles.swapBox}>
@@ -241,8 +243,8 @@ export default function Swap() {
                 style={styles.input}
               />
               <select value={tokenIn} onChange={(e) => setTokenIn(e.target.value)} style={styles.tokenSelect}>
-                {availableTokens.map((token) => (
-                  <option key={token} value={token}>
+                {tokenList.map((token) => (
+                  <option key={token} value={token} disabled={token === tokenOut}>
                     {token}
                   </option>
                 ))}
@@ -266,8 +268,8 @@ export default function Swap() {
             <div style={styles.inputGroup}>
               <input type="text" placeholder="0.0" value={estimatedOut || ""} disabled style={styles.input} />
               <select value={tokenOut} onChange={(e) => setTokenOut(e.target.value)} style={styles.tokenSelect}>
-                {availableTokens.map((token) => (
-                  <option key={token} value={token}>
+                {tokenList.map((token) => (
+                  <option key={token} value={token} disabled={token === tokenIn}>
                     {token}
                   </option>
                 ))}
@@ -320,10 +322,10 @@ export default function Swap() {
           {(hasEnoughAllowance || step === "swap") && (
             <button
               onClick={handleSwap}
-              disabled={loading || !isConnected || !amountIn}
+              disabled={loading || !isConnected || !amountIn || poolId === null || poolId === 0n}
               style={{
                 ...styles.button,
-                ...(loading || !isConnected || !amountIn ? styles.buttonDisabled : {}),
+                ...(loading || !isConnected || !amountIn || poolId === null || poolId === 0n ? styles.buttonDisabled : {}),
               }}
             >
               {loading ? "Swapping..." : "Swap"}
@@ -344,8 +346,8 @@ export default function Swap() {
         <div style={styles.info}>
           <h4>ℹ️ Swap Guide</h4>
           <ul>
-            <li>Select a pool with two tokens</li>
-            <li>Enter the amount of token you want to swap</li>
+            <li>Select tokens to swap (pool auto-detected)</li>
+            <li>Enter the amount you want to swap</li>
             <li>Review the estimated output (includes 0.3% fee)</li>
             <li>Set min output for slippage protection (optional)</li>
             <li>Click Approve to authorize the swap</li>
@@ -392,14 +394,6 @@ const styles = {
     fontSize: "14px",
     color: "#333",
   },
-  select: {
-    width: "100%",
-    padding: "10px",
-    border: "1px solid #ddd",
-    borderRadius: "4px",
-    fontSize: "14px",
-    fontFamily: "inherit",
-  },
   swapBox: {
     backgroundColor: "#fff",
     border: "1px solid #dee2e6",
@@ -439,7 +433,7 @@ const styles = {
     borderRadius: "4px",
     fontSize: "14px",
     fontFamily: "inherit",
-    minWidth: "80px",
+    minWidth: "100px",
   },
   swapButton: {
     position: "absolute",
@@ -458,6 +452,7 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
     transition: "background-color 0.3s",
+    zIndex: 1,
   },
   priceInfo: {
     backgroundColor: "#e7f3ff",
@@ -507,10 +502,6 @@ const styles = {
     color: "#155724",
     fontSize: "12px",
   },
-  txInfo_a: {
-    color: "#155724",
-    textDecoration: "none",
-  },
   success: {
     backgroundColor: "#d4edda",
     color: "#155724",
@@ -548,5 +539,21 @@ const styles = {
     padding: "12px",
     fontSize: "12px",
     color: "#004085",
+  },
+  poolInfo: {
+    backgroundColor: "#f0f0f0",
+    border: "1px solid #ddd",
+    borderRadius: "4px",
+    padding: "10px",
+    marginBottom: "16px",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    fontSize: "12px",
+    fontWeight: "600",
+  },
+  reserves: {
+    color: "#666",
+    fontSize: "11px",
   },
 };

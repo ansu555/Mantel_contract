@@ -1,5 +1,6 @@
 // Contract addresses (update after deployment)
 export const POOLS_ADDRESS = "0xe63514C2B0842B58A16Ced0C63668BAA91B033Af";
+export const ROUTER_ADDRESS = "0xFe2108798dC74481d5cCE1588cBD00801758dD6d"; // MultiHopSwapRouter on Mantle Sepolia
 export const TOKEN_ADDRESSES = {
   tUSDC: "0x6D13968b1Fe787ed0237D3645D094161CC165E4c",
   tUSDT: "0x0828b7774ea41Db0fCbf13ADe31b5F61624A1364",
@@ -184,3 +185,74 @@ export const MANTLE_SEPOLIA = {
     default: { name: "Explorer", url: "https://explorer.sepolia.mantle.xyz" },
   },
 };
+
+// Multi-Hop Router ABI
+export const ROUTER_ABI = [
+  {
+    inputs: [
+      { internalType: "address", name: "tokenIn", type: "address" },
+      { internalType: "address", name: "tokenOut", type: "address" },
+      { internalType: "uint256", name: "amountIn", type: "uint256" },
+      { internalType: "uint256", name: "minAmountOut", type: "uint256" },
+      { internalType: "address", name: "receiver", type: "address" }
+    ],
+    name: "swapSingleHop",
+    outputs: [{ internalType: "uint256", name: "amountOut", type: "uint256" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [
+      { internalType: "address", name: "tokenIn", type: "address" },
+      { internalType: "address", name: "tokenIntermediate", type: "address" },
+      { internalType: "address", name: "tokenOut", type: "address" },
+      { internalType: "uint256", name: "amountIn", type: "uint256" },
+      { internalType: "uint256", name: "minAmountOut", type: "uint256" },
+      { internalType: "address", name: "receiver", type: "address" }
+    ],
+    name: "swapTwoHop",
+    outputs: [{ internalType: "uint256", name: "finalAmountOut", type: "uint256" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [
+      { internalType: "address", name: "tokenIn", type: "address" },
+      { internalType: "address", name: "tokenIntermediate1", type: "address" },
+      { internalType: "address", name: "tokenIntermediate2", type: "address" },
+      { internalType: "address", name: "tokenOut", type: "address" },
+      { internalType: "uint256", name: "amountIn", type: "uint256" },
+      { internalType: "uint256", name: "minAmountOut", type: "uint256" },
+      { internalType: "address", name: "receiver", type: "address" }
+    ],
+    name: "swapThreeHop",
+    outputs: [{ internalType: "uint256", name: "finalAmountOut", type: "uint256" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [
+      { internalType: "address", name: "tokenIn", type: "address" },
+      { internalType: "address", name: "tokenIntermediate", type: "address" },
+      { internalType: "address", name: "tokenOut", type: "address" },
+      { internalType: "uint256", name: "amountIn", type: "uint256" }
+    ],
+    name: "getAmountOutTwoHop",
+    outputs: [{ internalType: "uint256", name: "expectedOutput", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      { internalType: "address", name: "tokenIn", type: "address" },
+      { internalType: "address", name: "tokenIntermediate1", type: "address" },
+      { internalType: "address", name: "tokenIntermediate2", type: "address" },
+      { internalType: "address", name: "tokenOut", type: "address" },
+      { internalType: "uint256", name: "amountIn", type: "uint256" }
+    ],
+    name: "getAmountOutThreeHop",
+    outputs: [{ internalType: "uint256", name: "expectedOutput", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+];
