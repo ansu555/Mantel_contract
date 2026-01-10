@@ -1,6 +1,7 @@
 import { useAccount, useChainId, useSwitchChain, useWriteContract, useWaitForTransactionReceipt, useReadContract } from "wagmi";
 import { useState, useEffect } from "react";
-import { POOLS_ADDRESS, POOLS_ABI, TOKEN_ADDRESSES, ERC20_ABI } from "../config";
+import { POOLS_ADDRESS, POOLS_ABI, ROUTER_ADDRESS, ROUTER_ABI, TOKEN_ADDRESSES, ERC20_ABI } from "../config";
+import { publicClient } from "../viem";
 import { parseUnits, formatUnits } from "viem";
 
 export default function Swap() {
@@ -15,9 +16,11 @@ export default function Swap() {
   const [amountIn, setAmountIn] = useState("");
   const [amountOutMin, setAmountOutMin] = useState("");
   const [estimatedOut, setEstimatedOut] = useState(null);
+  const [estimatedOutBig, setEstimatedOutBig] = useState(0n);
   const [step, setStep] = useState("approve");
   const [loading, setLoading] = useState(false);
   const [poolId, setPoolId] = useState(null);
+  const [bestRoute, setBestRoute] = useState(null);
 
   const DEFAULT_GAS_LIMIT = 500_000n;
   const tokenList = Object.keys(TOKEN_ADDRESSES);
@@ -47,16 +50,36 @@ export default function Swap() {
     query: { enabled: poolId !== null && poolId !== undefined },
   });
 
+  // Get token decimals (for accurate unit parsing)
+  const { data: tokenInDecimals } = useReadContract({
+    address: TOKEN_ADDRESSES[tokenIn],
+    abi: ERC20_ABI,
+    functionName: "decimals",
+    args: [],
+    query: { enabled: !!tokenIn },
+  });
+
+  const { data: tokenOutDecimals } = useReadContract({
+    address: TOKEN_ADDRESSES[tokenOut],
+    abi: ERC20_ABI,
+    functionName: "decimals",
+    args: [],
+    query: { enabled: !!tokenOut },
+  });
+
   // Estimate output amount using actual pool reserves
   useEffect(() => {
     if (!amountIn || amountIn === "0" || !poolInfo) {
       setEstimatedOut(null);
+      setEstimatedOutBig(0n);
       return;
     }
 
     try {
       const [token0, token1, reserve0, reserve1] = poolInfo;
-      const amountInParsed = parseUnits(amountIn, 18);
+      const decIn = typeof tokenInDecimals === "number" ? tokenInDecimals : 18;
+      const decOut = typeof tokenOutDecimals === "number" ? tokenOutDecimals : 18;
+      const amountInParsed = parseUnits(amountIn, decIn);
       
       // Determine which reserve is for tokenIn
       const isToken0 = TOKEN_ADDRESSES[tokenIn].toLowerCase() === token0.toLowerCase();
@@ -69,12 +92,14 @@ export default function Swap() {
       const denominator = reserveIn * 1000n + amountInWithFee;
       const amountOut = numerator / denominator;
 
-      setEstimatedOut(formatUnits(amountOut, 18));
+      setEstimatedOut(formatUnits(amountOut, decOut));
+      setEstimatedOutBig(amountOut);
     } catch (err) {
       console.error("Error estimating output:", err);
       setEstimatedOut(null);
+      setEstimatedOutBig(0n);
     }
-  }, [amountIn, tokenIn, tokenOut, poolInfo]);
+  }, [amountIn, tokenIn, tokenOut, poolInfo, tokenInDecimals, tokenOutDecimals]);
 
   // Get token balance
   const { data: tokenBalance } = useReadContract({
@@ -85,27 +110,47 @@ export default function Swap() {
     query: { enabled: isConnected && address },
   });
 
-  // Get token allowance
+  // Dynamic approval target based on route: pool for direct, router for multi-hop
+  const approvalTarget = bestRoute?.type === "direct" ? POOLS_ADDRESS : ROUTER_ADDRESS;
   const { data: allowance } = useReadContract({
     address: TOKEN_ADDRESSES[tokenIn],
     abi: ERC20_ABI,
     functionName: "allowance",
-    args: [address, POOLS_ADDRESS],
-    query: { enabled: isConnected && address },
+    args: [address, approvalTarget],
+    query: { enabled: isConnected && address && !!bestRoute },
   });
 
   const handleApprove = async () => {
     if (!isConnected) {
-      alert("Connect your wallet first");
+      alert("Please connect your wallet first");
       return;
     }
 
-    if (!amountIn || amountIn === "0") {
-      alert("Enter a valid amount");
+    if (!bestRoute) {
+      alert("No route available. Please select different tokens.");
       return;
     }
 
-    const amount = parseUnits(amountIn, 18);
+    if (!amountIn || parseFloat(amountIn) <= 0) {
+      alert("Please enter a valid amount");
+      return;
+    }
+
+    const decIn = typeof tokenInDecimals === "number" ? tokenInDecimals : 18;
+    const amount = parseUnits(amountIn, decIn);
+
+    // Determine correct approval target based on route type
+    const approvalTarget = bestRoute.type === "direct" ? POOLS_ADDRESS : ROUTER_ADDRESS;
+    
+    console.log("🔐 Approval Details:", {
+      token: tokenIn,
+      tokenAddress: TOKEN_ADDRESSES[tokenIn],
+      approvalTarget,
+      targetName: bestRoute.type === "direct" ? "POOLS" : "ROUTER",
+      amount: amount.toString(),
+      amountFormatted: amountIn,
+      routeType: bestRoute.type,
+    });
 
     setLoading(true);
     try {
@@ -114,72 +159,395 @@ export default function Swap() {
           address: TOKEN_ADDRESSES[tokenIn],
           abi: ERC20_ABI,
           functionName: "approve",
-          args: [POOLS_ADDRESS, amount],
+          args: [approvalTarget, amount],
           gas: DEFAULT_GAS_LIMIT,
         },
         {
-          onSuccess: () => {
+          onSuccess: (hash) => {
+            console.log("✅ Approval transaction sent:", hash);
             setStep("swap");
             setLoading(false);
           },
-          onError: () => {
+          onError: (err) => {
+            console.error("❌ Approve error:", err);
+            alert(`Approval failed: ${err.message}`);
             setLoading(false);
           },
         }
       );
     } catch (err) {
-      console.error("Approve error:", err);
+      console.error("❌ Approve error:", err);
+      alert(`Approval failed: ${err.message}`);
       setLoading(false);
     }
   };
 
   const handleSwap = async () => {
     if (!isConnected) {
-      alert("Connect your wallet first");
+      alert("Please connect your wallet first");
       return;
     }
 
-    if (!amountIn || amountIn === "0") {
-      alert("Enter a valid amount");
+    if (!bestRoute) {
+      alert("No route available for this token pair");
       return;
     }
 
-    if (poolId === null || poolId === undefined) {
-      alert("Pool not found for this token pair");
+    if (!amountIn || parseFloat(amountIn) <= 0) {
+      alert("Please enter a valid amount");
       return;
     }
 
-    const amountInParsed = parseUnits(amountIn, 18);
-    const minOut = parseUnits(amountOutMin || "0", 18);
+    const decIn = typeof tokenInDecimals === "number" ? tokenInDecimals : 18;
+    const decOut = typeof tokenOutDecimals === "number" ? tokenOutDecimals : 18;
+    const amountInParsed = parseUnits(amountIn, decIn);
+    const minOut = amountOutMin && parseFloat(amountOutMin) > 0 
+      ? parseUnits(amountOutMin, decOut) 
+      : 0n;
 
-    setLoading(true);
-    try {
-      writeContract(
-        {
-          address: POOLS_ADDRESS,
-          abi: POOLS_ABI,
-          functionName: "swap",
-          args: [poolId, TOKEN_ADDRESSES[tokenIn], amountInParsed, minOut],
-          gas: DEFAULT_GAS_LIMIT,
-        },
-        {
-          onSuccess: () => {
-            setStep("approve");
-            setAmountIn("");
-            setAmountOutMin("");
-            setEstimatedOut(null);
-            setLoading(false);
-            alert("Swap completed successfully!");
-          },
-          onError: () => {
-            setLoading(false);
-          },
+    console.log("💱 Swap Parameters:", {
+      routeType: bestRoute.type,
+      path: bestRoute.path.join(" → "),
+      tokenIn,
+      tokenOut,
+    tokenInAddress: TOKEN_ADDRESSES[tokenIn],
+    tokenOutAddress: TOKEN_ADDRESSES[tokenOut],
+    amountIn: amountInParsed.toString(),
+    amountInFormatted: amountIn,
+    minOut: minOut.toString(),
+    minOutFormatted: amountOutMin || "0",
+    estimatedOut: estimatedOut,
+    poolId: poolId,
+    poolIdType: typeof poolId,
+  });
+
+  setLoading(true);
+
+  try {
+    if (bestRoute.type === "direct") {
+        // ===== DIRECT SWAP =====
+        if (poolId === null || poolId === undefined) {
+          alert("Pool not found for this token pair");
+          setLoading(false);
+          return;
         }
-      );
+
+        // ✅ CRITICAL FIX: Verify pool actually exists
+        // poolId = 0 could mean "first pool" OR "no pool exists"
+        // We need to check if the pool data is valid
+        if (!poolInfo || !poolInfo[0] || !poolInfo[1]) {
+          alert("❌ Pool does not exist for this token pair.\n\nPlease:\n1. Create a pool first, or\n2. Use multi-hop routing if available");
+          setLoading(false);
+          return;
+        }
+
+        // Verify the pool actually contains our tokens
+        const pool0Lower = poolInfo[0].toLowerCase();
+        const pool1Lower = poolInfo[1].toLowerCase();
+        const tokenInLower = TOKEN_ADDRESSES[tokenIn].toLowerCase();
+        const tokenOutLower = TOKEN_ADDRESSES[tokenOut].toLowerCase();
+        
+        const poolHasTokens = 
+          (pool0Lower === tokenInLower && pool1Lower === tokenOutLower) ||
+          (pool0Lower === tokenOutLower && pool1Lower === tokenInLower);
+        
+        if (!poolHasTokens) {
+          alert(`❌ Pool ${poolId} exists but doesn't contain the selected token pair.\n\nPool tokens: ${tokenIn} / ${tokenOut}\nActual pool tokens: ${poolInfo[0]} / ${poolInfo[1]}`);
+          setLoading(false);
+          return;
+        }
+
+        // Pre-flight checks
+        console.log("🔍 Running pre-flight checks...");
+
+        const [balance, allowance] = await Promise.all([
+          publicClient.readContract({
+            address: TOKEN_ADDRESSES[tokenIn],
+            abi: ERC20_ABI,
+            functionName: "balanceOf",
+            args: [address],
+          }),
+          publicClient.readContract({
+            address: TOKEN_ADDRESSES[tokenIn],
+            abi: ERC20_ABI,
+            functionName: "allowance",
+            args: [address, POOLS_ADDRESS],
+          })
+        ]);
+
+        console.log("📊 Pre-swap Status:", {
+          yourBalance: formatUnits(balance, decIn),
+          requiredAmount: amountIn,
+          hasEnoughBalance: balance >= amountInParsed,
+          allowance: formatUnits(allowance, decIn),
+          hasEnoughAllowance: allowance >= amountInParsed,
+          poolReserve0: poolInfo ? formatUnits(poolInfo[2], 18) : "N/A",
+          poolReserve1: poolInfo ? formatUnits(poolInfo[3], 18) : "N/A",
+        });
+
+        // Check balance
+        if (balance < amountInParsed) {
+          const shortfall = formatUnits(amountInParsed - balance, decIn);
+          alert(`Insufficient ${tokenIn} balance.\nYou have: ${formatUnits(balance, decIn)}\nYou need: ${amountIn}\nShortfall: ${shortfall}`);
+          setLoading(false);
+          return;
+        }
+
+        // Check allowance
+        if (allowance < amountInParsed) {
+          alert(`Insufficient allowance for pool contract.\nPlease approve ${tokenIn} first.\nCurrent allowance: ${formatUnits(allowance, decIn)}\nRequired: ${amountIn}`);
+          setStep("approve");
+          setLoading(false);
+          return;
+        }
+
+        // Check pool liquidity
+        if (poolInfo) {
+          const [token0, token1, reserve0, reserve1] = poolInfo;
+          const isToken0 = TOKEN_ADDRESSES[tokenIn].toLowerCase() === token0.toLowerCase();
+          const reserveOut = isToken0 ? reserve1 : reserve0;
+          
+          if (estimatedOutBig >= reserveOut) {
+            alert(`Insufficient pool liquidity.\nPool has: ${formatUnits(reserveOut, decOut)} ${tokenOut}\nYou need: ${estimatedOut}\n\nTry a smaller amount.`);
+            setLoading(false);
+            return;
+          }
+
+          // Warn if using >5% of pool
+          const percentOfPool = (estimatedOutBig * 100n) / reserveOut;
+          if (percentOfPool > 5n) {
+            const shouldContinue = window.confirm(
+              `⚠️ Large Trade Warning\n\n` +
+              `This trade uses ${percentOfPool}% of the pool's liquidity.\n` +
+              `You may experience significant price impact.\n\n` +
+              `Continue anyway?`
+            );
+            if (!shouldContinue) {
+              setLoading(false);
+              return;
+            }
+          }
+        }
+
+        console.log("✅ All pre-flight checks passed. Executing swap...");
+      // Log exact contract call parameters
+      console.log("📞 Contract Call Args:", {
+        contractAddress: POOLS_ADDRESS,
+        functionName: "swap",
+        arg_poolId: poolId,
+        arg_poolId_type: typeof poolId,
+        arg_tokenIn: TOKEN_ADDRESSES[tokenIn],
+        arg_amountIn: amountInParsed.toString(),
+        arg_minOut: minOut.toString(),
+      });
+
+        // 🔥 SIMULATE FIRST to get exact revert reason
+        try {
+          console.log("🧪 Simulating swap transaction...");
+          
+          // Extra debug: Log the exact pool tokens vs our selected tokens
+          console.log("🔬 Token Address Comparison:");
+          console.log("   Pool Token0:", poolInfo[0]);
+          console.log("   Pool Token1:", poolInfo[1]);
+          console.log("   Our tokenIn (", tokenIn, "):", TOKEN_ADDRESSES[tokenIn]);
+          console.log("   Our tokenOut (", tokenOut, "):", TOKEN_ADDRESSES[tokenOut]);
+          console.log("   Match check - tokenIn in pool:", 
+            poolInfo[0].toLowerCase() === TOKEN_ADDRESSES[tokenIn].toLowerCase() || 
+            poolInfo[1].toLowerCase() === TOKEN_ADDRESSES[tokenIn].toLowerCase()
+          );
+          
+          const { request } = await publicClient.simulateContract({
+            address: POOLS_ADDRESS,
+            abi: POOLS_ABI,
+            functionName: "swap",
+            args: [poolId, TOKEN_ADDRESSES[tokenIn], amountInParsed, minOut],
+            account: address,
+          });
+          console.log("✅ Simulation passed!", request);
+        } catch (simError) {
+          console.error("❌ Simulation failed:", simError);
+          
+          // Extract the actual revert reason
+          let revertReason = "Unknown error";
+          if (simError?.cause?.reason) {
+            revertReason = simError.cause.reason;
+          } else if (simError?.shortMessage) {
+            revertReason = simError.shortMessage;
+          } else if (simError?.message) {
+            // Try to extract revert reason from message
+            const match = simError.message.match(/reason:\s*(.+?)(?:\n|$)/);
+            revertReason = match ? match[1] : simError.message.slice(0, 200);
+          }
+          
+          alert(
+            `❌ Swap Simulation Failed\n\n` +
+            `Reason: ${revertReason}\n\n` +
+            `This error was caught BEFORE sending the transaction.\n\n` +
+            `Possible causes:\n` +
+            `• Token not approved for pool contract\n` +
+            `• Pool reserves changed\n` +
+            `• Token address mismatch\n` +
+            `• Insufficient liquidity\n\n` +
+            `Check console for full error details.`
+          );
+          setLoading(false);
+          return;
+        }
+
+        // Execute direct swap
+        writeContract(
+          {
+            address: POOLS_ADDRESS,
+            abi: POOLS_ABI,
+            functionName: "swap",
+            args: [poolId, TOKEN_ADDRESSES[tokenIn], amountInParsed, minOut],
+            gas: DEFAULT_GAS_LIMIT,
+          },
+          {
+            onSuccess: (hash) => {
+              console.log("✅ Direct swap transaction sent:", hash);
+              handleSwapSuccess();
+            },
+            onError: (err) => {
+              console.error("❌ Direct swap failed:", err);
+              
+              // Parse error message for common issues
+              let errorMsg = "Swap transaction failed";
+              if (err.message.includes("Insufficient output amount")) {
+                errorMsg = "Slippage too high. Try increasing your minimum output or reducing swap amount.";
+              } else if (err.message.includes("Insufficient liquidity")) {
+                errorMsg = "Pool doesn't have enough liquidity for this swap.";
+              } else if (err.message.includes("Transfer amount exceeds balance")) {
+                errorMsg = "Insufficient token balance.";
+              } else if (err.message.includes("Transfer amount exceeds allowance")) {
+                errorMsg = "Insufficient token allowance. Please approve again.";
+              }
+              
+              alert(`❌ ${errorMsg}\n\nDetails: ${err.message}`);
+              setLoading(false);
+            },
+          }
+        );
+
+      } else if (bestRoute.type === "2hop") {
+        // ===== TWO-HOP SWAP =====
+        const intermediate = bestRoute.path[1];
+
+        console.log("🔍 Two-hop swap pre-flight checks...");
+
+        // Check allowance for router
+        const allowance = await publicClient.readContract({
+          address: TOKEN_ADDRESSES[tokenIn],
+          abi: ERC20_ABI,
+          functionName: "allowance",
+          args: [address, ROUTER_ADDRESS],
+        });
+
+        if (allowance < amountInParsed) {
+          alert(`Insufficient allowance for router contract.\nPlease approve ${tokenIn} for router first.`);
+          setStep("approve");
+          setLoading(false);
+          return;
+        }
+
+        console.log("✅ Router allowance OK. Executing 2-hop swap...");
+
+        writeContract(
+          {
+            address: ROUTER_ADDRESS,
+            abi: ROUTER_ABI,
+            functionName: "swapTwoHop",
+            args: [
+              TOKEN_ADDRESSES[tokenIn],
+              TOKEN_ADDRESSES[intermediate],
+              TOKEN_ADDRESSES[tokenOut],
+              amountInParsed,
+              minOut,
+              address,
+            ],
+            gas: DEFAULT_GAS_LIMIT,
+          },
+          {
+            onSuccess: (hash) => {
+              console.log("✅ 2-hop swap transaction sent:", hash);
+              handleSwapSuccess();
+            },
+            onError: (err) => {
+              console.error("❌ 2-hop swap failed:", err);
+              alert(`2-hop swap failed: ${err.message}`);
+              setLoading(false);
+            },
+          }
+        );
+
+      } else if (bestRoute.type === "3hop") {
+        // ===== THREE-HOP SWAP =====
+        const intermediate1 = bestRoute.path[1];
+        const intermediate2 = bestRoute.path[2];
+
+        console.log("🔍 Three-hop swap pre-flight checks...");
+
+        const allowance = await publicClient.readContract({
+          address: TOKEN_ADDRESSES[tokenIn],
+          abi: ERC20_ABI,
+          functionName: "allowance",
+          args: [address, ROUTER_ADDRESS],
+        });
+
+        if (allowance < amountInParsed) {
+          alert(`Insufficient allowance for router contract.\nPlease approve ${tokenIn} for router first.`);
+          setStep("approve");
+          setLoading(false);
+          return;
+        }
+
+        console.log("✅ Router allowance OK. Executing 3-hop swap...");
+
+        writeContract(
+          {
+            address: ROUTER_ADDRESS,
+            abi: ROUTER_ABI,
+            functionName: "swapThreeHop",
+            args: [
+              TOKEN_ADDRESSES[tokenIn],
+              TOKEN_ADDRESSES[intermediate1],
+              TOKEN_ADDRESSES[intermediate2],
+              TOKEN_ADDRESSES[tokenOut],
+              amountInParsed,
+              minOut,
+              address,
+            ],
+            gas: DEFAULT_GAS_LIMIT,
+          },
+          {
+            onSuccess: (hash) => {
+              console.log("✅ 3-hop swap transaction sent:", hash);
+              handleSwapSuccess();
+            },
+            onError: (err) => {
+              console.error("❌ 3-hop swap failed:", err);
+              alert(`3-hop swap failed: ${err.message}`);
+              setLoading(false);
+            },
+          }
+        );
+      }
     } catch (err) {
-      console.error("Swap error:", err);
+      console.error("❌ Unexpected swap error:", err);
+      alert(`Unexpected error: ${err.message}`);
       setLoading(false);
     }
+  };
+
+  const handleSwapSuccess = () => {
+    setStep("approve");
+    setAmountIn("");
+    setAmountOutMin("");
+    setEstimatedOut(null);
+    setEstimatedOutBig(0n);
+    setBestRoute(null);
+    setLoading(false);
+    alert("Swap completed successfully!");
   };
 
   const handleSwapTokens = () => {
@@ -191,8 +559,9 @@ export default function Swap() {
     setEstimatedOut(null);
   };
 
-  const parsedBalance = tokenBalance ? formatUnits(tokenBalance, 18) : "0";
-  const parsedAllowance = allowance ? formatUnits(allowance, 18) : "0";
+  const decIn = typeof tokenInDecimals === "number" ? tokenInDecimals : 18;
+  const parsedBalance = tokenBalance ? formatUnits(tokenBalance, decIn) : "0";
+  const parsedAllowance = allowance ? formatUnits(allowance, decIn) : "0";
   const hasEnoughAllowance = parseFloat(parsedAllowance) >= parseFloat(amountIn || "0");
 
   // Determine if the fetched pool actually matches the selected token pair
@@ -206,6 +575,114 @@ export default function Swap() {
       )
     : false;
   const poolExistsForPair = !!poolInfo && poolTokensMatch;
+
+  // Auto-route discovery using router view functions
+  useEffect(() => {
+    const computeBestRoute = async () => {
+      try {
+        if (!amountIn || !tokenIn || !tokenOut || tokenIn === tokenOut) {
+          setBestRoute(null);
+          return;
+        }
+
+        const decIn = typeof tokenInDecimals === "number" ? tokenInDecimals : 18;
+        const decOut = typeof tokenOutDecimals === "number" ? tokenOutDecimals : 18;
+        const amountInParsed = parseUnits(amountIn, decIn);
+        const routes = [];
+
+        console.log("Route computation:", { poolExistsForPair, estimatedOutBig: estimatedOutBig.toString(), estimatedOut });
+
+        // Direct route if pool matches
+        if (poolExistsForPair && estimatedOutBig > 0n) {
+          routes.push({
+            type: "direct",
+            path: [tokenIn, tokenOut],
+            output: estimatedOutBig,
+            displayOutput: estimatedOut,
+          });
+          console.log("Added direct route:", routes[0]);
+        }
+
+        // 2-hop via common intermediates
+        const commonIntermediates = ["tUSDC", "tUSDT", "tDAI", "tWETH"];
+        for (const inter of commonIntermediates) {
+          if (inter === tokenIn || inter === tokenOut) continue;
+          try {
+            const twoHopOut = await publicClient.readContract({
+              address: ROUTER_ADDRESS,
+              abi: ROUTER_ABI,
+              functionName: "getAmountOutTwoHop",
+              args: [
+                TOKEN_ADDRESSES[tokenIn],
+                TOKEN_ADDRESSES[inter],
+                TOKEN_ADDRESSES[tokenOut],
+                amountInParsed,
+              ],
+            });
+            if (twoHopOut && twoHopOut > 0n) {
+              routes.push({
+                type: "2hop",
+                path: [tokenIn, inter, tokenOut],
+                output: twoHopOut,
+                displayOutput: formatUnits(twoHopOut, decOut),
+              });
+            }
+          } catch (_) {
+            // ignore failing route
+          }
+        }
+
+        // 3-hop via limited combinations
+        for (let i = 0; i < commonIntermediates.length; i++) {
+          for (let j = i + 1; j < commonIntermediates.length; j++) {
+            const i1 = commonIntermediates[i];
+            const i2 = commonIntermediates[j];
+            if ([i1, i2].includes(tokenIn) || [i1, i2].includes(tokenOut)) continue;
+            try {
+              const threeHopOut = await publicClient.readContract({
+                address: ROUTER_ADDRESS,
+                abi: ROUTER_ABI,
+                functionName: "getAmountOutThreeHop",
+                args: [
+                  TOKEN_ADDRESSES[tokenIn],
+                  TOKEN_ADDRESSES[i1],
+                  TOKEN_ADDRESSES[i2],
+                  TOKEN_ADDRESSES[tokenOut],
+                  amountInParsed,
+                ],
+              });
+              if (threeHopOut && threeHopOut > 0n) {
+                routes.push({
+                  type: "3hop",
+                  path: [tokenIn, i1, i2, tokenOut],
+                  output: threeHopOut,
+                  displayOutput: formatUnits(threeHopOut, decOut),
+                });
+              }
+            } catch (_) {
+              // ignore failing route
+            }
+          }
+        }
+
+        if (routes.length > 0) {
+          const best = routes.reduce((prev, curr) => (curr.output > prev.output ? curr : prev));
+          setBestRoute(best);
+          // Only update estimatedOut if it's from multi-hop (direct already set it)
+          if (best.type !== "direct") {
+            setEstimatedOut(best.displayOutput);
+          }
+        } else {
+          setBestRoute(null);
+          // keep estimatedOut from direct calc if any
+        }
+      } catch (err) {
+        console.error("route computation error", err);
+      }
+    };
+
+    computeBestRoute();
+  }, [amountIn, tokenIn, tokenOut, poolExistsForPair, estimatedOutBig, tokenInDecimals, tokenOutDecimals]);
 
   return (
     <div style={styles.container}>
@@ -235,7 +712,14 @@ export default function Swap() {
         {isLoadingPoolId && <div style={styles.pending}>🔍 Finding pool...</div>}
         
         {!isLoadingPoolId && tokenIn !== tokenOut && !poolExistsForPair && (
-          <div style={styles.warning}>⚠️ No matching pool for this token pair. Try a different pair or use Multi-Hop.</div>
+          <div style={styles.warning}>⚠️ No direct pool for this pair. Auto-routing will try multi-hop if available.</div>
+        )}
+        {/* Best Route Display */}
+        {bestRoute && (
+          <div style={styles.poolInfo}>
+            <span>🛣️ Route: <strong>{bestRoute.type.toUpperCase()}</strong></span>
+            <span style={styles.reserves}>{bestRoute.path.join(" → ")}</span>
+          </div>
         )}
 
         {/* Swap Interface */}
@@ -307,7 +791,7 @@ export default function Swap() {
         {amountIn && estimatedOut && (
           <div style={styles.priceInfo}>
             <p>Price: 1 {tokenIn} = {(parseFloat(estimatedOut) / parseFloat(amountIn)).toFixed(6)} {tokenOut}</p>
-            <p>Fee: ~0.3% included in estimate</p>
+            <p>Fee: ~0.3% per hop included in estimate</p>
           </div>
         )}
 
@@ -321,10 +805,10 @@ export default function Swap() {
           {!hasEnoughAllowance && step === "approve" ? (
             <button
               onClick={handleApprove}
-              disabled={loading || !isConnected || !amountIn}
+              disabled={loading || !isConnected || !amountIn || !bestRoute}
               style={{
                 ...styles.button,
-                ...(loading || !isConnected || !amountIn ? styles.buttonDisabled : {}),
+                ...(loading || !isConnected || !amountIn || !bestRoute ? styles.buttonDisabled : {}),
               }}
             >
               {loading ? "Approving..." : `Approve ${tokenIn}`}
@@ -334,15 +818,13 @@ export default function Swap() {
           {(hasEnoughAllowance || step === "swap") && (
             <button
               onClick={handleSwap}
-              disabled={
-                loading || !isConnected || !amountIn || poolId === null || !poolExistsForPair
-              }
+              disabled={loading || !isConnected || !amountIn || !bestRoute}
               style={{
                 ...styles.button,
-                ...(loading || !isConnected || !amountIn || poolId === null || !poolExistsForPair ? styles.buttonDisabled : {}),
+                ...(loading || !isConnected || !amountIn || !bestRoute ? styles.buttonDisabled : {}),
               }}
             >
-              {loading ? "Swapping..." : "Swap"}
+              {loading ? "Swapping..." : bestRoute ? `Swap via ${bestRoute.type}` : "Swap"}
             </button>
           )}
         </div>
