@@ -41,8 +41,10 @@ export const POOLS_ABI = [
   {
     inputs: [
       { internalType: "uint256", name: "poolId", type: "uint256" },
-      { internalType: "address", name: "token0", type: "address" },
-      { internalType: "address", name: "token1", type: "address" },
+      { internalType: "uint256", name: "amount0Desired", type: "uint256" },
+      { internalType: "uint256", name: "amount1Desired", type: "uint256" },
+      { internalType: "uint256", name: "amount0Min", type: "uint256" },
+      { internalType: "uint256", name: "amount1Min", type: "uint256" },
     ],
     name: "addLiquidity",
     outputs: [
@@ -151,6 +153,16 @@ export const ERC20_ABI = [
     name: "symbol",
     outputs: [{ internalType: "string", name: "", type: "string" }],
     stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      { internalType: "address", name: "to", type: "address" },
+      { internalType: "uint256", name: "amount", type: "uint256" }
+    ],
+    name: "mint",
+    outputs: [],
+    stateMutability: "nonpayable",
     type: "function",
   },
 ];

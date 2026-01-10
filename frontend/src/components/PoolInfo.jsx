@@ -13,8 +13,22 @@ export default function PoolInfo() {
   const [poolInfo, setPoolInfo] = useState(null);
   const [userPosition, setUserPosition] = useState(null);
   const [poolCount, setPoolCount] = useState(null);
+  const [allPools, setAllPools] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  const poolTokenPairs = [
+    { id: 0, token0: "tUSDC", token1: "tUSDT" },
+    { id: 1, token0: "tWETH", token1: "tUSDC" },
+    { id: 2, token0: "tWBTC", token1: "tWETH" },
+    { id: 3, token0: "tLINK", token1: "tUSDC" },
+    { id: 4, token0: "tUNI", token1: "tWETH" },
+    { id: 5, token0: "tAAVE", token1: "tUSDC" },
+    { id: 6, token0: "tCRV", token1: "tUSDC" },
+    { id: 7, token0: "tMKR", token1: "tWETH" },
+    { id: 8, token0: "tDAI", token1: "tUSDC" },
+    { id: 9, token0: "tLINK", token1: "tWETH" },
+  ];
 
   const fetchPoolCount = async () => {
     if (chainId !== 5003) {
@@ -32,7 +46,34 @@ export default function PoolInfo() {
         functionName: "poolCount",
       });
 
-      setPoolCount(Number(count));
+      const totalPools = Number(count);
+      setPoolCount(totalPools);
+
+      // Fetch all pools info
+      const poolsData = [];
+      for (let i = 0; i < totalPools; i++) {
+        const info = await publicClient.readContract({
+          address: POOLS_ADDRESS,
+          abi: POOLS_ABI,
+          functionName: "getPoolInfo",
+          args: [BigInt(i)],
+        });
+
+        const pairInfo = poolTokenPairs[i] || { token0: "Unknown", token1: "Unknown" };
+        
+        poolsData.push({
+          id: i,
+          token0Name: pairInfo.token0,
+          token1Name: pairInfo.token1,
+          token0: info[0],
+          token1: info[1],
+          reserve0: info[2],
+          reserve1: info[3],
+          totalLPTokens: info[4],
+        });
+      }
+
+      setAllPools(poolsData);
     } catch (err) {
       setError(err.message || "Failed to fetch pool count");
     } finally {
@@ -99,9 +140,35 @@ export default function PoolInfo() {
         </button>
 
         {poolCount !== null && (
-          <p style={{ color: "blue", marginTop: "0.5rem" }}>
-            <strong>Total Pools:</strong> {poolCount}
-          </p>
+          <div>
+            <p style={{ color: "blue", marginTop: "0.5rem" }}>
+              <strong>Total Pools:</strong> {poolCount}
+            </p>
+            
+            {allPools.length > 0 && (
+              <div style={styles.poolsList}>
+                <h4>All Pools:</h4>
+                {allPools.map((pool) => (
+                  <div key={pool.id} style={styles.poolItem}>
+                    <div style={styles.poolHeader}>
+                      <strong>Pool {pool.id}: {pool.token0Name}/{pool.token1Name}</strong>
+                      <button 
+                        onClick={() => setPoolId(pool.id.toString())} 
+                        style={styles.selectButton}
+                      >
+                        Select
+                      </button>
+                    </div>
+                    <div style={styles.poolDetails}>
+                      <small>Reserve {pool.token0Name}: {formatUnits(pool.reserve0, 18)}</small>
+                      <small>Reserve {pool.token1Name}: {formatUnits(pool.reserve1, 18)}</small>
+                      <small>Total LP: {formatUnits(pool.totalLPTokens, 18)}</small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
         <hr style={{ margin: "1rem 0" }} />
@@ -180,5 +247,41 @@ const styles = {
     backgroundColor: "#e8f0ff",
     borderRadius: "4px",
     fontSize: "0.9rem",
+  },
+  poolsList: {
+    marginTop: "1rem",
+    border: "1px solid #ddd",
+    borderRadius: "6px",
+    padding: "1rem",
+    backgroundColor: "#fff",
+  },
+  poolItem: {
+    padding: "0.75rem",
+    marginBottom: "0.75rem",
+    border: "1px solid #e0e0e0",
+    borderRadius: "4px",
+    backgroundColor: "#fafafa",
+  },
+  poolHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: "0.5rem",
+  },
+  poolDetails: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.25rem",
+    fontSize: "0.85rem",
+    color: "#666",
+  },
+  selectButton: {
+    padding: "0.4rem 0.8rem",
+    backgroundColor: "#28a745",
+    color: "white",
+    border: "none",
+    borderRadius: "4px",
+    cursor: "pointer",
+    fontSize: "0.85rem",
   },
 };

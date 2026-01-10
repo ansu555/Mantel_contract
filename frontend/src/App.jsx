@@ -2,6 +2,8 @@ import { WagmiProvider } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import WalletConnect from "./components/WalletConnect";
 import PoolInfo from "./components/PoolInfo";
+import AddLiquidity from "./components/AddLiquidity";
+import Swap from "./components/Swap";
 import { config } from "./wagmi";
 
 const queryClient = new QueryClient();
@@ -27,7 +29,16 @@ export default function App() {
           </section>
 
           <section style={styles.section}>
-            <h2>Instructions</h2>
+            <h2>Add Liquidity</h2>
+            <AddLiquidity />
+          </section>
+
+          <section style={styles.section}>
+            <h2>Swap Tokens</h2>
+            <Swap />
+          </section>
+
+          <section style={styles.section}>
             <div style={styles.instructions}>
               <ol>
                 <li>Connect your wallet (MetaMask) to Mantle Sepolia</li>
