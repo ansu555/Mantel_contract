@@ -1,12 +1,16 @@
 import { WagmiProvider } from "wagmi";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import WalletConnect from "./components/WalletConnect";
 import PoolInfo from "./components/PoolInfo";
 import { config } from "./wagmi";
 
+const queryClient = new QueryClient();
+
 export default function App() {
   return (
     <WagmiProvider config={config}>
-      <div style={styles.container}>
+      <QueryClientProvider client={queryClient}>
+        <div style={styles.container}>
         <header style={styles.header}>
           <h1>🌊 Mantle DEX Test UI</h1>
           <WalletConnect />
@@ -44,6 +48,7 @@ export default function App() {
           </footer>
         </main>
       </div>
+      </QueryClientProvider>
     </WagmiProvider>
   );
 }
