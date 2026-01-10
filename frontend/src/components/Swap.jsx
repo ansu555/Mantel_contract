@@ -39,7 +39,7 @@ export default function Swap() {
   }, [poolIdData]);
 
   // Get pool info for reserve calculations
-  const { data: poolInfo } = useReadContract({
+  const { data: poolInfo, error: poolInfoError } = useReadContract({
     address: POOLS_ADDRESS,
     abi: POOLS_ABI,
     functionName: "getPoolInfo",
@@ -195,6 +195,18 @@ export default function Swap() {
   const parsedAllowance = allowance ? formatUnits(allowance, 18) : "0";
   const hasEnoughAllowance = parseFloat(parsedAllowance) >= parseFloat(amountIn || "0");
 
+  // Determine if the fetched pool actually matches the selected token pair
+  const tokenInAddr = TOKEN_ADDRESSES[tokenIn]?.toLowerCase();
+  const tokenOutAddr = TOKEN_ADDRESSES[tokenOut]?.toLowerCase();
+  const poolTokensMatch = poolInfo
+    ? (
+        poolInfo[0].toLowerCase() === tokenInAddr && poolInfo[1].toLowerCase() === tokenOutAddr
+      ) || (
+        poolInfo[0].toLowerCase() === tokenOutAddr && poolInfo[1].toLowerCase() === tokenInAddr
+      )
+    : false;
+  const poolExistsForPair = !!poolInfo && poolTokensMatch;
+
   return (
     <div style={styles.container}>
       <div style={styles.card}>
@@ -209,7 +221,7 @@ export default function Swap() {
         )}
 
         {/* Pool Info Display */}
-        {poolId !== null && poolId !== undefined && poolId !== 0n && (
+        {poolExistsForPair && (
           <div style={styles.poolInfo}>
             <span>Pool ID: {poolId.toString()}</span>
             {poolInfo && (
@@ -222,8 +234,8 @@ export default function Swap() {
 
         {isLoadingPoolId && <div style={styles.pending}>🔍 Finding pool...</div>}
         
-        {!isLoadingPoolId && poolId === 0n && tokenIn !== tokenOut && (
-          <div style={styles.warning}>⚠️ No pool exists for this token pair. Please select different tokens.</div>
+        {!isLoadingPoolId && tokenIn !== tokenOut && !poolExistsForPair && (
+          <div style={styles.warning}>⚠️ No matching pool for this token pair. Try a different pair or use Multi-Hop.</div>
         )}
 
         {/* Swap Interface */}
@@ -322,10 +334,12 @@ export default function Swap() {
           {(hasEnoughAllowance || step === "swap") && (
             <button
               onClick={handleSwap}
-              disabled={loading || !isConnected || !amountIn || poolId === null || poolId === 0n}
+              disabled={
+                loading || !isConnected || !amountIn || poolId === null || !poolExistsForPair
+              }
               style={{
                 ...styles.button,
-                ...(loading || !isConnected || !amountIn || poolId === null || poolId === 0n ? styles.buttonDisabled : {}),
+                ...(loading || !isConnected || !amountIn || poolId === null || !poolExistsForPair ? styles.buttonDisabled : {}),
               }}
             >
               {loading ? "Swapping..." : "Swap"}
