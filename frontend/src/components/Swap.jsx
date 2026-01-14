@@ -1,8 +1,8 @@
 import { useAccount, useChainId, useSwitchChain, useWriteContract, useWaitForTransactionReceipt, useReadContract } from "wagmi";
 import { useState, useEffect } from "react";
 import { POOLS_ADDRESS, POOLS_ABI, ROUTER_ADDRESS, ROUTER_ABI, TOKEN_ADDRESSES, ERC20_ABI } from "../config";
-import { publicClient } from "../viem";
-import { parseUnits, formatUnits } from "viem";
+import { publicClient, getWalletClient } from "../viem";
+import { parseUnits, formatUnits, encodeFunctionData } from "viem";
 
 export default function Swap() {
   const { address, isConnected } = useAccount();
@@ -22,7 +22,9 @@ export default function Swap() {
   const [poolId, setPoolId] = useState(null);
   const [bestRoute, setBestRoute] = useState(null);
 
-  const DEFAULT_GAS_LIMIT = 500_000n;
+  // Mantle Sepolia requires much higher gas limits than typical EVM chains
+  // The sequencer reported minimum needed: 68990976
+  const DEFAULT_GAS_LIMIT = 100_000_000n; // 100M gas for Mantle
   const tokenList = Object.keys(TOKEN_ADDRESSES);
 
   // Get pool ID for the selected token pair
@@ -364,6 +366,56 @@ export default function Swap() {
             account: address,
           });
           console.log("✅ Simulation passed!", request);
+          
+          // Use raw eth_sendTransaction via MetaMask directly
+          console.log("📤 Sending transaction via raw eth_sendTransaction...");
+          
+          // Encode the function call data manually
+          const callData = encodeFunctionData({
+            abi: POOLS_ABI,
+            functionName: "swap",
+            args: [poolId, TOKEN_ADDRESSES[tokenIn], amountInParsed, minOut],
+          });
+          
+          console.log("📦 Encoded call data:", callData);
+
+          try {
+            // Send raw transaction via MetaMask
+            const txHash = await window.ethereum.request({
+              method: "eth_sendTransaction",
+              params: [{
+                from: address,
+                to: POOLS_ADDRESS,
+                data: callData,
+                gas: "0x7A120", // 500,000 in hex
+              }],
+            });
+            
+            console.log("✅ Transaction sent:", txHash);
+            alert(`Transaction sent! Hash: ${txHash}\n\nWaiting for confirmation...`);
+            
+            // Wait for confirmation
+            const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+            console.log("✅ Transaction confirmed:", receipt);
+            
+            if (receipt.status === "success") {
+              handleSwapSuccess();
+            } else {
+              alert("Transaction failed on-chain. Check explorer for details:\nhttps://explorer.sepolia.mantle.xyz/tx/" + txHash);
+              setLoading(false);
+            }
+          } catch (txError) {
+            console.error("❌ Transaction error:", txError);
+            
+            if (txError.code === 4001 || txError.message?.includes("User rejected") || txError.message?.includes("user rejected")) {
+              alert("Transaction was rejected in wallet.");
+            } else {
+              alert(`Transaction failed: ${txError.message || JSON.stringify(txError)}`);
+            }
+            setLoading(false);
+          }
+          return;
+          
         } catch (simError) {
           console.error("❌ Simulation failed:", simError);
           
@@ -393,41 +445,6 @@ export default function Swap() {
           setLoading(false);
           return;
         }
-
-        // Execute direct swap
-        writeContract(
-          {
-            address: POOLS_ADDRESS,
-            abi: POOLS_ABI,
-            functionName: "swap",
-            args: [poolId, TOKEN_ADDRESSES[tokenIn], amountInParsed, minOut],
-            gas: DEFAULT_GAS_LIMIT,
-          },
-          {
-            onSuccess: (hash) => {
-              console.log("✅ Direct swap transaction sent:", hash);
-              handleSwapSuccess();
-            },
-            onError: (err) => {
-              console.error("❌ Direct swap failed:", err);
-              
-              // Parse error message for common issues
-              let errorMsg = "Swap transaction failed";
-              if (err.message.includes("Insufficient output amount")) {
-                errorMsg = "Slippage too high. Try increasing your minimum output or reducing swap amount.";
-              } else if (err.message.includes("Insufficient liquidity")) {
-                errorMsg = "Pool doesn't have enough liquidity for this swap.";
-              } else if (err.message.includes("Transfer amount exceeds balance")) {
-                errorMsg = "Insufficient token balance.";
-              } else if (err.message.includes("Transfer amount exceeds allowance")) {
-                errorMsg = "Insufficient token allowance. Please approve again.";
-              }
-              
-              alert(`❌ ${errorMsg}\n\nDetails: ${err.message}`);
-              setLoading(false);
-            },
-          }
-        );
 
       } else if (bestRoute.type === "2hop") {
         // ===== TWO-HOP SWAP =====
@@ -684,9 +701,78 @@ export default function Swap() {
     computeBestRoute();
   }, [amountIn, tokenIn, tokenOut, poolExistsForPair, estimatedOutBig, tokenInDecimals, tokenOutDecimals]);
 
+  // Debug function to diagnose swap issues
+  const runDiagnostic = async () => {
+    console.log("\n========== SWAP DIAGNOSTIC ==========\n");
+    console.log("📋 CONFIG TOKEN ADDRESSES:");
+    console.log("   tokenIn (", tokenIn, "):", TOKEN_ADDRESSES[tokenIn]);
+    console.log("   tokenOut (", tokenOut, "):", TOKEN_ADDRESSES[tokenOut]);
+    
+    console.log("\n📦 POOL INFO (Pool ID:", poolId?.toString(), "):");
+    if (poolInfo) {
+      console.log("   Pool Token0:", poolInfo[0]);
+      console.log("   Pool Token1:", poolInfo[1]);
+      console.log("   Reserve0:", poolInfo[2]?.toString());
+      console.log("   Reserve1:", poolInfo[3]?.toString());
+    } else {
+      console.log("   ❌ No pool info available!");
+    }
+
+    console.log("\n🔍 ADDRESS MATCH CHECK:");
+    const configIn = TOKEN_ADDRESSES[tokenIn]?.toLowerCase();
+    const configOut = TOKEN_ADDRESSES[tokenOut]?.toLowerCase();
+    const pool0 = poolInfo?.[0]?.toLowerCase();
+    const pool1 = poolInfo?.[1]?.toLowerCase();
+    
+    const tokenInMatchesPool0 = configIn === pool0;
+    const tokenInMatchesPool1 = configIn === pool1;
+    const tokenOutMatchesPool0 = configOut === pool0;
+    const tokenOutMatchesPool1 = configOut === pool1;
+    
+    console.log("   tokenIn matches Pool Token0:", tokenInMatchesPool0);
+    console.log("   tokenIn matches Pool Token1:", tokenInMatchesPool1);
+    console.log("   tokenOut matches Pool Token0:", tokenOutMatchesPool0);
+    console.log("   tokenOut matches Pool Token1:", tokenOutMatchesPool1);
+    
+    if (!tokenInMatchesPool0 && !tokenInMatchesPool1) {
+      console.log("\n   ❌ PROBLEM: Your tokenIn address is NOT in this pool!");
+      console.log("   Config has:", TOKEN_ADDRESSES[tokenIn]);
+      console.log("   Pool has:", poolInfo?.[0], "and", poolInfo?.[1]);
+    }
+    
+    if (!tokenOutMatchesPool0 && !tokenOutMatchesPool1) {
+      console.log("\n   ❌ PROBLEM: Your tokenOut address is NOT in this pool!");
+    }
+
+    // Check allowance directly
+    console.log("\n💰 CHECKING ALLOWANCE TO POOL CONTRACT...");
+    try {
+      const currentAllowance = await publicClient.readContract({
+        address: TOKEN_ADDRESSES[tokenIn],
+        abi: ERC20_ABI,
+        functionName: "allowance",
+        args: [address, POOLS_ADDRESS],
+      });
+      console.log("   Allowance:", currentAllowance.toString());
+    } catch (e) {
+      console.log("   ❌ Error checking allowance:", e.message);
+    }
+    
+    console.log("\n=====================================\n");
+    alert("Check browser console (F12) for diagnostic results!");
+  };
+
   return (
     <div style={styles.container}>
       <div style={styles.card}>
+        {/* Debug Button */}
+        <button 
+          onClick={runDiagnostic} 
+          style={{ marginBottom: "10px", padding: "8px", backgroundColor: "#6c757d", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}
+        >
+          🔍 Run Diagnostic
+        </button>
+
         {/* Network Warning */}
         {isConnected && chainId !== 5003 && (
           <div style={styles.warning}>
