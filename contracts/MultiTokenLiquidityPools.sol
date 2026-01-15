@@ -5,6 +5,7 @@ pragma solidity ^0.8.20;
  * @title MultiTokenLiquidityPools
  * @notice Simple AMM-style pool manager for Mantle Sepolia test tokens
  * @dev Supports creating pools, adding/removing liquidity, and swapping.
+ * @dev Uses SafeERC20 patterns for L2 compatibility (Mantle Network)
  */
 interface IERC20 {
     function totalSupply() external view returns (uint256);
@@ -18,7 +19,37 @@ interface IERC20 {
     event Approval(address indexed owner, address indexed spender, uint256 value);
 }
 
+/**
+ * @title SafeERC20
+ * @dev Wrapper library for ERC20 operations that handles non-standard tokens
+ * and provides proper error handling for L2 networks like Mantle
+ */
+library SafeERC20 {
+    function safeTransfer(IERC20 token, address to, uint256 value) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+    }
+
+    function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+    }
+
+    function safeApprove(IERC20 token, address spender, uint256 value) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+    }
+
+    function _callOptionalReturn(IERC20 token, bytes memory data) private {
+        (bool success, bytes memory returndata) = address(token).call(data);
+        require(success, "SafeERC20: low-level call failed");
+        
+        if (returndata.length > 0) {
+            require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation failed");
+        }
+    }
+}
+
 contract MultiTokenLiquidityPools {
+    using SafeERC20 for IERC20;
+
     struct Pool {
         address token0;
         address token1;
@@ -118,8 +149,8 @@ contract MultiTokenLiquidityPools {
 
         require(lpTokens > 0, "Insufficient liquidity minted");
 
-        IERC20(pool.token0).transferFrom(msg.sender, address(this), amount0);
-        IERC20(pool.token1).transferFrom(msg.sender, address(this), amount1);
+        IERC20(pool.token0).safeTransferFrom(msg.sender, address(this), amount0);
+        IERC20(pool.token1).safeTransferFrom(msg.sender, address(this), amount1);
 
         pool.reserve0 += amount0;
         pool.reserve1 += amount1;
@@ -154,8 +185,8 @@ contract MultiTokenLiquidityPools {
         pool.reserve0 -= amount0;
         pool.reserve1 -= amount1;
 
-        IERC20(pool.token0).transfer(msg.sender, amount0);
-        IERC20(pool.token1).transfer(msg.sender, amount1);
+        IERC20(pool.token0).safeTransfer(msg.sender, amount0);
+        IERC20(pool.token1).safeTransfer(msg.sender, amount1);
 
         emit LiquidityRemoved(poolId, msg.sender, amount0, amount1, lpTokens);
     }
@@ -179,10 +210,10 @@ contract MultiTokenLiquidityPools {
         require(amountOut >= amountOutMin, "Insufficient output amount");
         require(amountOut < reserveOut, "Insufficient liquidity");
 
-        IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
+        IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
 
         address tokenOut = isToken0 ? pool.token1 : pool.token0;
-        IERC20(tokenOut).transfer(msg.sender, amountOut);
+        IERC20(tokenOut).safeTransfer(msg.sender, amountOut);
 
         if (isToken0) {
             pool.reserve0 += amountIn;
@@ -233,10 +264,26 @@ contract MultiTokenLiquidityPools {
         if (stored == 0) {
             stored = pairToPoolId[token1][token0];
         }
+        // Note: Returns 0 both when pool not found AND when pool ID is 0
+        // Use hasPool() to check if a pool actually exists
         if (stored == 0) {
             return 0;
         }
         return stored - 1;
+    }
+
+    /**
+     * @notice Check if a pool exists for a token pair
+     * @param token0 First token address
+     * @param token1 Second token address
+     * @return exists True if pool exists, false otherwise
+     */
+    function hasPool(address token0, address token1) external view returns (bool exists) {
+        uint256 stored = pairToPoolId[token0][token1];
+        if (stored == 0) {
+            stored = pairToPoolId[token1][token0];
+        }
+        return stored > 0;
     }
 
     function sqrt(uint256 y) internal pure returns (uint256 z) {

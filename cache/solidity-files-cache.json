@@ -2,8 +2,8 @@
   "_format": "hh-sol-cache-2",
   "files": {
     "/Users/engineering_faliure/Mantel_contract/contracts/MultiTokenLiquidityPools.sol": {
-      "lastModificationDate": 1768031057249,
-      "contentHash": "c196f69c055319e079d40b6e26a02a25",
+      "lastModificationDate": 1768455139101,
+      "contentHash": "9465ac78d7284d1261b0f9a0984565f6",
       "sourceName": "contracts/MultiTokenLiquidityPools.sol",
       "solcConfig": {
         "version": "0.8.20",
@@ -37,12 +37,13 @@
       "artifacts": [
         "IERC20",
         "MultiTokenLiquidityPools",
+        "SafeERC20",
         "TestERC20Token"
       ]
     },
     "/Users/engineering_faliure/Mantel_contract/contracts/MultiHopSwapRouter.sol": {
-      "lastModificationDate": 1768038346873,
-      "contentHash": "5de7f4524fd47655885f777eb1a48871",
+      "lastModificationDate": 1768455202832,
+      "contentHash": "1e61ad318f4dc6ea8dcef57eee66429d",
       "sourceName": "contracts/MultiHopSwapRouter.sol",
       "solcConfig": {
         "version": "0.8.20",
@@ -76,7 +77,8 @@
       "artifacts": [
         "IERC20",
         "ILiquidityPool",
-        "MultiHopSwapRouter"
+        "MultiHopSwapRouter",
+        "SafeERC20"
       ]
     }
   }

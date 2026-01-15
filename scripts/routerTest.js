@@ -15,21 +15,9 @@ async function main() {
     const router = await hre.ethers.getContractAt("MultiHopSwapRouter", ROUTER);
     console.log("\n✅ Router contract found");
 
-    // Check if router has pools reference
-    const poolsRef = await router.poolsContract();
-    console.log("Router pools reference:", poolsRef);
-
     // Get pool contract
     const pools = await hre.ethers.getContractAt("MultiTokenLiquidityPools", POOLS);
     console.log("✅ Pools contract found");
-
-    // Test a multi-hop swap route: USDC -> DAI -> WETH
-    const route = [tUSDC, tDAI, tWETH];
-    const amountIn = hre.ethers.parseEther("10");
-
-    console.log("\n📊 Testing multi-hop swap:");
-    console.log("Route: tUSDC → tDAI → tWETH");
-    console.log("Amount in:", hre.ethers.formatEther(amountIn));
 
     // Check balances
     const usdc = await hre.ethers.getContractAt("TestERC20Token", tUSDC);
@@ -40,26 +28,40 @@ async function main() {
     const daiBal = await dai.balanceOf(signer.address);
     const wethBal = await weth.balanceOf(signer.address);
 
+    console.log("\n📊 Testing 2-hop swap:");
+    console.log("Route: tUSDC → tDAI → tWETH");
+
+    const amountIn = hre.ethers.parseEther("1");
+    console.log("Amount in:", hre.ethers.formatEther(amountIn));
+
     console.log("\nBefore swap:");
     console.log("  tUSDC:", hre.ethers.formatEther(usdcBal));
     console.log("  tDAI:", hre.ethers.formatEther(daiBal));
     console.log("  tWETH:", hre.ethers.formatEther(wethBal));
 
     // Approve router
-    console.log("\n🔐 Approving tokens to router...");
+    console.log("\n🔐 Approving tUSDC to router...");
     const approveTx = await usdc.approve(ROUTER, amountIn);
     await approveTx.wait();
     console.log("✅ Approved!");
 
-    // Execute multi-hop swap
-    console.log("\n💱 Executing multi-hop swap...");
-    const tx = await router.multiHopSwap(route, amountIn, 0, {
-      gasLimit: 500000,
-    });
+    // Execute 2-hop swap using swapTwoHop function
+    console.log("\n💱 Executing 2-hop swap...");
+    const tx = await router.swapTwoHop(
+      tUSDC,        // tokenIn
+      tDAI,         // tokenIntermediate
+      tWETH,        // tokenOut
+      amountIn,     // amount in
+      0,            // minAmountOut
+      signer.address, // receiver
+      {
+        gasLimit: 500000,
+      }
+    );
 
     console.log("Transaction hash:", tx.hash);
     const receipt = await tx.wait();
-    console.log("✅ Multi-hop swap successful!");
+    console.log("✅ 2-hop swap successful!");
     console.log("Gas used:", receipt.gasUsed.toString());
 
     // Check new balances

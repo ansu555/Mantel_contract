@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 /**
  * @title MultiHopSwapRouter
  * @notice Enables multi-hop token swaps across multiple liquidity pools on Mantle Network
+ * @dev Uses SafeERC20 patterns for L2 compatibility
  */
 
 interface IERC20 {
@@ -11,6 +12,33 @@ interface IERC20 {
     function transfer(address recipient, uint256 amount) external returns (bool);
     function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
     function approve(address spender, uint256 amount) external returns (bool);
+}
+
+/**
+ * @title SafeERC20
+ * @dev Wrapper library for ERC20 operations
+ */
+library SafeERC20 {
+    function safeTransfer(IERC20 token, address to, uint256 value) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+    }
+
+    function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+    }
+
+    function safeApprove(IERC20 token, address spender, uint256 value) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+    }
+
+    function _callOptionalReturn(IERC20 token, bytes memory data) private {
+        (bool success, bytes memory returndata) = address(token).call(data);
+        require(success, "SafeERC20: low-level call failed");
+        
+        if (returndata.length > 0) {
+            require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation failed");
+        }
+    }
 }
 
 interface ILiquidityPool {
@@ -36,9 +64,12 @@ interface ILiquidityPool {
     );
     
     function getPoolId(address token0, address token1) external view returns (uint256);
+    
+    function hasPool(address token0, address token1) external view returns (bool);
 }
 
 contract MultiHopSwapRouter {
+    using SafeERC20 for IERC20;
     
     ILiquidityPool public immutable poolContract;
     
@@ -90,17 +121,18 @@ contract MultiHopSwapRouter {
     ) external returns (uint256 amountOut) {
         if (amountIn == 0) revert InvalidAmount();
         
+        // Use hasPool() to check existence - fixes pool ID 0 bug
+        if (!poolContract.hasPool(tokenIn, tokenOut)) revert PoolNotFound();
         uint256 poolId = poolContract.getPoolId(tokenIn, tokenOut);
-        if (poolId == 0) revert PoolNotFound();
         
-        IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
-        IERC20(tokenIn).approve(address(poolContract), amountIn);
+        IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
+        IERC20(tokenIn).safeApprove(address(poolContract), amountIn);
         
         amountOut = poolContract.swap(poolId, tokenIn, amountIn, minAmountOut);
         
         if (amountOut < minAmountOut) revert InsufficientOutput();
         
-        IERC20(tokenOut).transfer(receiver, amountOut);
+        IERC20(tokenOut).safeTransfer(receiver, amountOut);
         
         emit SingleHopSwap(msg.sender, poolId, tokenIn, tokenOut, amountIn, amountOut);
     }
@@ -115,21 +147,24 @@ contract MultiHopSwapRouter {
     ) external returns (uint256 finalAmountOut) {
         if (amountIn == 0) revert InvalidAmount();
         
+        // Use hasPool() to check existence - fixes pool ID 0 bug
+        if (!poolContract.hasPool(tokenIn, tokenIntermediate)) revert PoolNotFound();
+        if (!poolContract.hasPool(tokenIntermediate, tokenOut)) revert PoolNotFound();
+        
         uint256 poolId1 = poolContract.getPoolId(tokenIn, tokenIntermediate);
         uint256 poolId2 = poolContract.getPoolId(tokenIntermediate, tokenOut);
-        if (poolId1 == 0 || poolId2 == 0) revert PoolNotFound();
         
-        IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
+        IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
         
-        IERC20(tokenIn).approve(address(poolContract), amountIn);
+        IERC20(tokenIn).safeApprove(address(poolContract), amountIn);
         uint256 intermediateAmount = poolContract.swap(poolId1, tokenIn, amountIn, 0);
         
-        IERC20(tokenIntermediate).approve(address(poolContract), intermediateAmount);
+        IERC20(tokenIntermediate).safeApprove(address(poolContract), intermediateAmount);
         finalAmountOut = poolContract.swap(poolId2, tokenIntermediate, intermediateAmount, minAmountOut);
         
         if (finalAmountOut < minAmountOut) revert InsufficientOutput();
         
-        IERC20(tokenOut).transfer(receiver, finalAmountOut);
+        IERC20(tokenOut).safeTransfer(receiver, finalAmountOut);
         
         emit TwoHopSwap(msg.sender, tokenIn, tokenIntermediate, tokenOut, amountIn, finalAmountOut);
     }
@@ -145,25 +180,29 @@ contract MultiHopSwapRouter {
     ) external returns (uint256 finalAmountOut) {
         if (amountIn == 0) revert InvalidAmount();
         
+        // Use hasPool() to check existence - fixes pool ID 0 bug
+        if (!poolContract.hasPool(tokenIn, tokenIntermediate1)) revert PoolNotFound();
+        if (!poolContract.hasPool(tokenIntermediate1, tokenIntermediate2)) revert PoolNotFound();
+        if (!poolContract.hasPool(tokenIntermediate2, tokenOut)) revert PoolNotFound();
+        
         uint256 poolId1 = poolContract.getPoolId(tokenIn, tokenIntermediate1);
         uint256 poolId2 = poolContract.getPoolId(tokenIntermediate1, tokenIntermediate2);
         uint256 poolId3 = poolContract.getPoolId(tokenIntermediate2, tokenOut);
-        if (poolId1 == 0 || poolId2 == 0 || poolId3 == 0) revert PoolNotFound();
         
-        IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
+        IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
         
-        IERC20(tokenIn).approve(address(poolContract), amountIn);
+        IERC20(tokenIn).safeApprove(address(poolContract), amountIn);
         uint256 intermediate1Amount = poolContract.swap(poolId1, tokenIn, amountIn, 0);
         
-        IERC20(tokenIntermediate1).approve(address(poolContract), intermediate1Amount);
+        IERC20(tokenIntermediate1).safeApprove(address(poolContract), intermediate1Amount);
         uint256 intermediate2Amount = poolContract.swap(poolId2, tokenIntermediate1, intermediate1Amount, 0);
         
-        IERC20(tokenIntermediate2).approve(address(poolContract), intermediate2Amount);
+        IERC20(tokenIntermediate2).safeApprove(address(poolContract), intermediate2Amount);
         finalAmountOut = poolContract.swap(poolId3, tokenIntermediate2, intermediate2Amount, minAmountOut);
         
         if (finalAmountOut < minAmountOut) revert InsufficientOutput();
         
-        IERC20(tokenOut).transfer(receiver, finalAmountOut);
+        IERC20(tokenOut).safeTransfer(receiver, finalAmountOut);
         
         emit ThreeHopSwap(msg.sender, tokenIn, tokenIntermediate1, tokenIntermediate2, tokenOut, amountIn, finalAmountOut);
     }
